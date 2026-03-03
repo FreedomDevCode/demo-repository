@@ -1,0 +1,45 @@
+name: Prevent Testing Branch Contamination
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-testing-contamination:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for testing branch contamination
+        run: |
+          BASE="${{ github.event.pull_request.base.ref }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # Get the merge base between the PR head and the base branch
+          MERGE_BASE=$(git merge-base origin/$BASE $HEAD)
+
+          # Find merge commits in the PR range
+          MERGE_COMMITS=$(git rev-list --merges $MERGE_BASE..$HEAD)
+
+          if [ -z "$MERGE_COMMITS" ]; then
+            echo "No merge commits found. Clean."
+            exit 0
+          fi
+
+          # Check if any merge commit has testing as a parent
+          for COMMIT in $MERGE_COMMITS; do
+            PARENTS=$(git log --pretty=format:'%P' -1 $COMMIT)
+            for PARENT in $PARENTS; do
+              # Check if this parent is on the testing branch
+              if git merge-base --is-ancestor $PARENT origin/testing 2>/dev/null &&                  git branch -r --contains $PARENT 2>/dev/null | grep -q 'origin/testing'; then
+                echo "::error::SDLC VIOLATION: Commit $COMMIT merges the testing branch into this feature branch. The testing branch is a terminal branch -- nothing should flow out of it. Please resolve merge conflicts locally instead of using the GitHub web editor."
+                echo ""
+                echo "To fix: git reset --hard HEAD~1 && git push --force-with-lease"
+                exit 1
+              fi
+            done
+          done
+
+          echo "Merge commits found but none involve the testing branch. Clean."
